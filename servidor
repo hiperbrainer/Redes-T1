@@ -1,3 +1,8 @@
+#!/usr/bin/env python3
+import asyncio
+from tcp import Servidor
+import re
+
 '''
 PRÁTICA 1 - REDES DE COMPUTADORES
 
@@ -12,10 +17,6 @@ ALUNOS:
     - Servidor: para criação de um servidor TCP, cedida pelo professor
     - re: para utilização de expressões regulares com regex
 '''
-
-import asyncio
-from tcp import Servidor
-import re
 
 '''
 2. Variáveis globais:
