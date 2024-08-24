@@ -1,27 +1,194 @@
-#!/usr/bin/env python3
+'''
+PRÁTICA 1 - REDES DE COMPUTADORES
+
+ALUNOS:
+    - Brainer Sueverti de Campos - 790829
+    - Rafael...
+'''
+
+'''
+1. Bibliotecas necessárias:
+    - asyncio: para execução de tarefas assíncronas
+    - Servidor: para criação de um servidor TCP, cedida pelo professor
+    - re: para utilização de expressões regulares com regex
+'''
+
 import asyncio
 from tcp import Servidor
 import re
 
+'''
+2. Variáveis globais:
+    - registro_de_usuarios para armazenar os usuários registrados
+    - registro_de_canais para armazenar os canais existentes
+'''
 
-def validar_nome(nome):
+registro_de_usuarios = {}
+registro_de_canais = {}
+
+
+'''
+3. Funções necessárias para a aplicação:
+    - validar_nome: função para validar o formato de um nome de usuário
+    - QUIT: função para SAIR do servidor
+    - PING: função para verificar se o servidor está respondendo
+    - NICK: função para realizar operações de inserção e alteração de nicknames (apelidos) dos usuários
+    - privmsg_users_function: função para enviar mensagens privadas para um usuário
+    - privmsg_group_function: função para enviar mensagens privadas para um canal
+    - JOIN: função para adicionar um usuário a um canal
+    - PART: função para remover um usuário de um canal
+    - menu: função para verificar qual comando foi enviado e realizar o chamamento da função correspondente
+    - dados_recebidos: função para receber os dados enviados e chamar a função menu
+    - conexao_aceita: função para aceitar a conexão de um usuário
+'''
+
+def validar_nome(nome: str) -> bool:
     return re.match(br'^[a-zA-Z][a-zA-Z0-9_-]*$', nome) is not None
 
+# função para verificar se o servidor está respondendo, caso responda ele retorna: ":server PONG server :<dados>"
+def PING(conexao, dados):
+    conexao.enviar(b':server PONG server :' + dados + b'\r\n')
 
-def sair(conexao):
-    print(conexao, 'conexão fechada')
+
+# função para enviar mensagens privadas para um usuário
+def privmsg_users_function(conexao, dados):
+    #se para a mensagem no primeiro digito for um #, então é um canal
+    destinatario, conteudo = dados.split(b' ', 1)
+    #verifica se o destinatário está registrado
+    if destinatario.lower() in registro_de_usuarios:
+        registro_de_usuarios[destinatario.lower()].enviar(b':%s PRIVMSG %s %s\r\n' % (conexao.nick_atual, destinatario, conteudo))
+
+# função para enviar mensagens privadas para um canal
+def privmsg_group_function(conexao, dados):
+    nome_canal, conteudo = dados.split(b' ', 1)
+    if nome_canal.lower() in registro_de_canais:
+        for usuario in registro_de_canais[nome_canal.lower()]:
+            if usuario != conexao.nick_atual:
+                registro_de_usuarios[usuario].enviar(b':%s PRIVMSG %s %s\r\n' % (conexao.nick_atual, nome_canal, conteudo))
+
+# função para remover um usuário de um canal
+def PART(conexao, dados):
+    #separa o primeiro valor do restante
+    nome_canal = dados.split(b' ', 1)[0]
+    #verifica se o canal existe e se o usuário está no canal
+    if nome_canal.lower() in registro_de_canais and conexao.nick_atual.lower() in registro_de_canais[nome_canal.lower()]:
+        #envia para todos os membros do canal a mensagem de que o usuário saiu
+        for usuario in registro_de_canais[nome_canal.lower()]:
+            registro_de_usuarios[usuario.lower()].enviar(b':%s PART %s\r\n' % (conexao.nick_atual, nome_canal))
+        #remove o usuário do canal
+        registro_de_canais[nome_canal.lower()].remove(conexao.nick_atual.lower())
+
+def QUIT(conexao, motivo):
+    membros_a_notificar = []
+    for nome_canal, membros in registro_de_canais.items():
+        if conexao.nick_atual.lower() in membros:
+            registro_de_canais[nome_canal].remove(conexao.nick_atual.lower())
+            for usuario in membros:
+                if usuario not in membros_a_notificar:
+                    membros_a_notificar.append(usuario)
+    for usuario in membros_a_notificar:
+        registro_de_usuarios[usuario].enviar(b':%s QUIT :%s\r\n' % (conexao.nick_atual, motivo))
+    registro_de_usuarios.pop(conexao.nick_atual.lower())
+    print(conexao, 'Conexão fechada')
     conexao.fechar()
 
+# função que realiza operações de inserção e alteração de nicknames (apelidos) dos usuários
+def NICK(conexao, dados):
+    novo_nick = dados
+    # verifica se o nick proposto é valido
+    if validar_nome(novo_nick) == True:
+        # verifica se o nick proposto já está em uso
+        if novo_nick.lower() in registro_de_usuarios:
+            conexao.enviar(b':server 433 %s %s :Nickname is already in use\r\n' % (conexao.nick_atual, novo_nick))
+        else:
+            # nick foi definido com sucesso
+            if conexao.nick_atual == b'*':
+                registro_de_usuarios[novo_nick.lower()] = conexao
+                conexao.nick_atual = novo_nick
+                conexao.enviar(b':server 001 %s :Welcome\r\n' % novo_nick)
+                conexao.enviar(b':server 422 %s :MOTD File is missing\r\n' % novo_nick)
+            # nick foi alterado com sucesso
+            elif novo_nick.lower() != conexao.nick_atual.lower():
+                registro_de_usuarios.pop(conexao.nick_atual.lower()) 
+                registro_de_usuarios[novo_nick.lower()] = conexao
+                conexao.enviar(b':%s NICK %s\r\n' % (conexao.nick_atual, novo_nick))
+                conexao.nick_atual = novo_nick
+    # nick proposto não é valido
+    else:
+        conexao.enviar(b':server 432 * %s :Erroneous nickname\r\n' % novo_nick)
 
+
+# função para adicionar um usuário a um canal
+def JOIN(conexao, dados):
+    nome_canal = dados
+    # nome do canal é valido?
+    if nome_canal.startswith(b'#'):
+        #verifica se o canal existe
+        if nome_canal.lower() not in registro_de_canais:
+            registro_de_canais[nome_canal.lower()] = [conexao.nick_atual]
+        else:
+            registro_de_canais[nome_canal.lower()].append(conexao.nick_atual.lower())
+        # envia mensagem de entrada no canal para todos os membros do canal
+        for usuario in registro_de_canais[nome_canal.lower()]:
+            con = registro_de_usuarios[usuario]
+            con.enviar(b':%s JOIN :%s\r\n' % (conexao.nick_atual, nome_canal)),
+        lista_membros = sorted(registro_de_canais[nome_canal.lower()])
+        membros = b':server 353 %s = %s :' % (conexao.nick_atual, nome_canal)
+        for usuario in lista_membros:
+            membros += usuario + b' '
+        membros.rstrip()
+        partition_membros = [membros[i:i+512-4] + b'\r\n' for i in range(0, len(membros), 512 - 4)]
+        for i in partition_membros:
+            conexao.enviar(b'%s' % i)
+        #avisa que acabou
+        conexao.enviar(b':server 366 %s %s :End of /NAMES list.\r\n' % (conexao.nick_atual, nome_canal))
+    # nome do canal não é valido
+    else:
+        conexao.enviar(b':server 403 %s :No such channel\r\n' % nome_canal)
+
+
+# função para verificar qual comando foi enviado e realizar o chamamento da função correspondente
+def menu(conexao, dados):
+    # recebe o comando e os dados
+    comando, dados = dados.split(b' ', 1)
+    #verifica qual comando foi enviado
+    if comando == b'NICK':
+        NICK(conexao, dados)
+    elif comando == b'PING':
+        PING(conexao, dados)
+    elif comando == b'JOIN':
+        JOIN(conexao, dados)
+    elif comando == b'PART':
+        if dados.startswith(b'#'):
+            PART(conexao, dados)
+    elif comando == b'PRIVMSG':
+        if dados[:1] == b'#':
+            privmsg_group_function(conexao,dados)
+        else:
+            privmsg_users_function(conexao,dados)
+
+# função que recebe os dados e fazx o tratamento
 def dados_recebidos(conexao, dados):
+    # recebeu dados?
     if dados == b'':
-        return sair(conexao)
+        return QUIT(conexao, b'Connection closed')
     print(conexao, dados)
+    conexao.dados_residuais = conexao.dados_residuais + dados
+    conexao.dados_residuais = conexao.dados_residuais.split(b'\r\n')
+    #chama a menu para verificar qual comando foi enviado
+    for i in range(len(conexao.dados_residuais) - 1):
+        menu(conexao, conexao.dados_residuais[i])
+    if conexao.dados_residuais[-1] == b'':
+        conexao.dados_residuais = b''
+    else:
+        conexao.dados_residuais = conexao.dados_residuais[-1]  
 
-
+# função dada pelo professor e que cria uma variavel para guardar o nick do usuário
 def conexao_aceita(conexao):
-    print(conexao, 'nova conexão')
+    print(conexao, 'Nova conexão')
     conexao.registrar_recebedor(dados_recebidos)
+    conexao.nick_atual = b'*'
+    conexao.dados_residuais = b''
 
 
 servidor = Servidor(6667)
